@@ -2,8 +2,12 @@
 #include <stdlib.h>
 #include "vector.h"
 
-#define WINDOW_WIDTH	640
-#define WINDOW_HEIGHT	640
+#define WINDOW_WIDTH	512
+#define WINDOW_HEIGHT	512
+
+#define QUADTREE_WIDTH		512
+#define QUADTREE_HEIGHT		512
+#define QUADTREE_LOG2		9
 
 static int windowwidth		= WINDOW_WIDTH;
 static int windowheight		= WINDOW_HEIGHT;
@@ -100,13 +104,15 @@ static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, i
 	}
 }
 
-static void BuildQuadTree(int numlevels)
+static void BuildQuadTree()
 {
 	vec2_t min, max;
+
+	int numlevels	= QUADTREE_LOG2 + 1;
 	
 	numnodes	= 1;
 	min		= vec2_t(0, 0);
-	max		= vec2_t(256.0f, 256.0f);
+	max		= vec2_t(QUADTREE_WIDTH, QUADTREE_HEIGHT);
 
 	BuildQuadTree_r(nodes, min, max, 0, numlevels);
 }
@@ -268,7 +274,8 @@ static void glutDisplay()
 
 	glDisable(GL_DEPTH_TEST);
 
-	R_DrawTree_r(nodes);
+	if(rendermode != 2)
+		R_DrawTree_r(nodes);
 
 	R_DrawCursor();
 
@@ -283,7 +290,7 @@ static void glutReshape(int w, int h)
 	glViewport(0, 0, windowwidth, windowheight);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	glOrtho(0, 256, 0, 256, -1, 1);
+	glOrtho(0, QUADTREE_WIDTH, 0, QUADTREE_HEIGHT, -1, 1);
 }
 
 static void glutKeyboard(unsigned char c, int x, int y)
@@ -304,7 +311,7 @@ static void glutKeyboard(unsigned char c, int x, int y)
 	if(c == 'r')
 	{
 		rendermode++;
-		if(rendermode == 2)
+		if(rendermode == 3)
 			rendermode = 0;
 	}
 
@@ -336,12 +343,14 @@ static void UpdateMouse(int x, int y)
 {
 	float xx, yy;
 
+	// calculate the position in the range 0 .. 1
 	xx = (float)x / (float)(windowwidth);
 	yy = (float)y / (float)(windowheight);
 	yy = 1.0f - yy;
 
-	xx *= 256.0f;
-	yy *= 256.0f;
+	// transform into quadtree space
+	xx *= QUADTREE_WIDTH;
+	yy *= QUADTREE_HEIGHT;
 
 	// update the global cursor position state
 	worldx = xx;
@@ -375,10 +384,10 @@ static void glutPassiveMouseMotion(int x, int y)
 int main(int argc, char **argv)
 {
 	// Glut Init
-	glutInit(&argc, argv);
 	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
 	glutInitWindowPosition(0, 0);
 	glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+	glutInit(&argc, argv);
 	glutCreateWindow(argv[0]);
 
 	glutDisplayFunc(glutDisplay);
@@ -389,7 +398,7 @@ int main(int argc, char **argv)
 	glutMotionFunc(glutMouseMotion);
 	glutPassiveMotionFunc(glutPassiveMouseMotion);
 
-	BuildQuadTree(9);
+	BuildQuadTree();
 	printf("done!\n");
 
 	glutPostRedisplay();

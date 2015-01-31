@@ -53,6 +53,75 @@ static bool BoxesIntersect(vec2_t mina, vec2_t maxa, vec2_t minb, vec2_t maxb)
 	return true;
 }
 
+// compute the signed distance
+// negative is outside, positive is inside
+static float SignedDistance(vec2_t min, vec2_t max, vec2_t p)
+{
+	vec2_t origin = 0.5f * (max + min);
+	vec2_t delta = max - min;
+	vec2_t hdelta = 0.5 * delta;
+
+	// shift the point to a box centered around the origin
+	p = p - origin;
+
+	// since the box is symetrical we can test only the positive quadrant
+	if(p.x < 0.0f)
+		p.x = -p.x;
+	if(p.y < 0.0f)
+		p.y = -p.y;
+
+	p = p - hdelta;
+
+	if(p.x > 0.0f && p.y > 0.0f)
+		return -p.Length();
+	if(p.x > 0.0f && p.y < 0.0f)
+		return -p.x;
+	if(p.x < 0.0f && p.y > 0.0f)
+		return -p.y;
+	
+	// both are inside the box
+	return (p.x > p.y ? -p.x : -p.y);
+}
+
+static float signeddistance;
+
+static void FindSignedDistance_r(qtnode_t *node, vec2_t p)
+{
+	int i;
+
+	if(!node)
+		return;
+
+	// fixme: if the box is solid we should be able to return immediately as the rest of the
+	// subtree will be solid
+	if(node->solid)
+	{
+		float d = SignedDistance(node->min, node->max, p);
+
+		if(d > signeddistance)
+			signeddistance = d;
+
+		return;
+	}
+
+	// recurse the children
+	for (i = 0; i < 4; i++)
+		FindSignedDistance_r(node->child[i], p);
+}
+
+static float FindSignedDistance(vec2_t p)
+{
+	signeddistance = -1e20;
+
+	//signeddistance = SignedDistance(vec2_t (-100, -100), vec2_t(100, 100), p);
+	//printf("signed distance: %f\n", signeddistance);
+
+	FindSignedDistance_r(nodes, p);
+	printf("signed distance: %f\n", signeddistance);
+
+	return signeddistance;
+}
+
 static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, int numlevels)
 {
 	vec2_t half;
@@ -267,6 +336,28 @@ static void R_DrawTree_r(qtnode_t* node)
 		R_DrawTree_r(node->child[i]);
 }
 
+static void DrawDistance()
+{
+	vec2_t p = vec2_t(worldx, worldy);
+
+	float d1 = FindSignedDistance(vec2_t(worldx, worldy));
+	float d2 = FindSignedDistance(vec2_t(worldx + 0.01f, worldy));
+	float d3 = FindSignedDistance(vec2_t(worldx, worldy + 0.01f));
+
+	vec2_t n(d2 - d1, d3 - d1);
+	n.Normalize();
+
+	vec2_t v1 = p;
+	vec2_t v2 = p + (-signeddistance * n);
+
+	glColor3f(0, 0, 1);
+
+	glBegin(GL_LINES);
+	glVertex2f(v1[0], v1[1]);
+	glVertex2f(v2[0], v2[1]);
+	glEnd();
+}
+
 static void glutDisplay()
 {
 	glClearColor(1, 1, 1, 1);
@@ -278,6 +369,8 @@ static void glutDisplay()
 		R_DrawTree_r(nodes);
 
 	R_DrawCursor();
+
+	DrawDistance();
 
 	glutSwapBuffers();
 }
@@ -355,6 +448,10 @@ static void UpdateMouse(int x, int y)
 	// update the global cursor position state
 	worldx = xx;
 	worldy = yy;
+
+	printf("worldx: %f, worldy: %f\n", worldx, worldy);
+
+	FindSignedDistance(vec2_t(worldx, worldy));
 }
 
 static void glutMouseMotion(int x, int y)

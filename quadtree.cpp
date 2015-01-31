@@ -9,8 +9,9 @@
 #define QUADTREE_HEIGHT		512
 #define QUADTREE_LOG2		9
 
-#define CONTENTS_SOLID	(1 << 0)
-#define CONTENTS_EMPTY	(1 << 1)
+#define CONTENTS_SOLID		(1 << 0)
+#define CONTENTS_EMPTY		(1 << 1)
+#define CONTENTS_INVALID	(0xffffffff)
 
 typedef unsigned int contents_t;
 
@@ -23,11 +24,10 @@ typedef struct qtnode_s
 	struct qtnode_s* child[4];
 
 	vec2_t		min, max;
-	unsigned int	contents;
 
-	// valid only for non leaf nodes
-	unsigned int	contentsand;
-	unsigned int	contentsor;
+	// 0 is the and of the content bits
+	// 1 is the or of the content bits
+	contents_t	contents[2];
 
 } qtnode_t;
 
@@ -101,12 +101,12 @@ static void FindSignedDistance_r(qtnode_t *node, vec2_t p, contents_t contents)
 	if(!node)
 		return;
 
-	// we can terminate early if no contents nodes are down this subtree
-	if(!(node->contentsor & contents))
+	// we can terminate early if all the nodes in the the subtree don't contain contents
+	if(!(node->contents[1] & contents))
 		return;
 
-	// we can terminate early if all the subtrees have the same contents
-	if(node->contents & contents)
+	// we can test early if all the nodes in the subtree have the contents
+	if(node->contents[0] & contents)
 	{
 		float d = SignedDistance(node->min, node->max, p);
 
@@ -140,11 +140,10 @@ static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, i
 	int i;
 
 	// setup the node
-	node->min	= min;
-	node->max	= max;
-	node->contents	= CONTENTS_SOLID;
-	node->contentsand = CONTENTS_SOLID;
-	node->contentsor = CONTENTS_SOLID;
+	node->min		= min;
+	node->max		= max;
+	node->contents[0]	= CONTENTS_SOLID;
+	node->contents[1]	= CONTENTS_SOLID;
 
 	// don't recurse if we're at the bottom of the tree
 	if(level == numlevels - 1)
@@ -185,10 +184,6 @@ static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, i
 		// recurse this node
 		BuildQuadTree_r(node->child[i], min, max, level + 1, numlevels);
 	}
-
-	// rebuild contents from children
-	node->contentsand = node->child[0]->contentsand & node->child[1]->contentsand & node->child[2]->contentsand & node->child[3]->contentsand;
-	node->contentsor = node->child[0]->contentsor | node->child[1]->contentsor | node->child[2]->contentsor | node->child[3]->contentsor;
 }
 
 static void BuildQuadTree()
@@ -209,10 +204,8 @@ static void RebuildContents_r(qtnode_t* node)
 	if (!node)
 		return;
 	
-	node->contents = node->child[0]->contents & node->child[1]->contents & node->child[2]->contents & node->child[3]->contents;
-
-	node->contentsand = node->child[0]->contentsand & node->child[1]->contentsand & node->child[2]->contentsand & node->child[3]->contentsand;
-	node->contentsor = node->child[0]->contentsor | node->child[1]->contentsor | node->child[2]->contentsor | node->child[3]->contentsor;
+	node->contents[0] = node->child[0]->contents[0] & node->child[1]->contents[0] & node->child[2]->contents[0] & node->child[3]->contents[0];
+	node->contents[1] = node->child[0]->contents[1] | node->child[1]->contents[1] | node->child[2]->contents[1] | node->child[3]->contents[1];
 
 	RebuildContents_r(node->parent);
 }
@@ -227,7 +220,7 @@ static contents_t ContentsAtPoint_r(qtnode_t *node, vec2_t p)
 {
 	if (!node->child[0] && !node->child[1] && !node->child[2] && !node->child[3])
 	{
-		return node->contents;
+		return node->contents[0];
 	}
 
 	// recurse the children
@@ -240,7 +233,8 @@ static contents_t ContentsAtPoint_r(qtnode_t *node, vec2_t p)
 	}
 
 	// should never get here
-	return 0xffffffff;
+	// or if the point is outside the quad tree bounds
+	return CONTENTS_INVALID;
 }
 
 static contents_t ContentsAtPoint(vec2_t p)
@@ -271,17 +265,9 @@ static void CarveTree_r(qtnode_t* node, vec2_t min, vec2_t max)
 		if((mid1 - mid0).Length() < toolsize)
 		{
 			if(lmbutton && !rmbutton)
-			{
-				node->contents = CONTENTS_EMPTY;
-				node->contentsand = CONTENTS_EMPTY;
-				node->contentsor = CONTENTS_EMPTY;
-			}
+				node->contents[0] = node->contents[1] = CONTENTS_EMPTY;
 			if(!lmbutton && rmbutton)
-			{
-				node->contents = CONTENTS_SOLID;
-				node->contentsand = CONTENTS_SOLID;
-				node->contentsor = CONTENTS_SOLID;
-			}
+				node->contents[0] = node->contents[1] = CONTENTS_SOLID;
 
 			RebuildContents(node);
 		}
@@ -370,7 +356,7 @@ static void R_DrawTree_r(qtnode_t* node)
 		R_DrawWireframeQuad,
 	};
 
-	if(node->contents & CONTENTS_SOLID)
+	if(node->contents[0] & CONTENTS_SOLID)
 	{
 		QuadDrawList[rendermode](node->min, node->max);
 

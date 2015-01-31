@@ -9,6 +9,11 @@
 #define QUADTREE_HEIGHT		512
 #define QUADTREE_LOG2		9
 
+#define CONTENTS_SOLID	(1 << 0)
+#define CONTENTS_EMPTY	(1 << 1)
+
+typedef unsigned int contents_t;
+
 static int windowwidth		= WINDOW_WIDTH;
 static int windowheight		= WINDOW_HEIGHT;
 
@@ -18,7 +23,11 @@ typedef struct qtnode_s
 	struct qtnode_s* child[4];
 
 	vec2_t		min, max;
-	bool		solid;
+	unsigned int	contents;
+
+	// valid only for non leaf nodes
+	unsigned int	contentsand;
+	unsigned int	contentsor;
 
 } qtnode_t;
 
@@ -85,16 +94,19 @@ static float SignedDistance(vec2_t min, vec2_t max, vec2_t p)
 
 static float signeddistance;
 
-static void FindSignedDistance_r(qtnode_t *node, vec2_t p)
+static void FindSignedDistance_r(qtnode_t *node, vec2_t p, contents_t contents)
 {
 	int i;
 
 	if(!node)
 		return;
 
-	// fixme: if the box is solid we should be able to return immediately as the rest of the
-	// subtree will be solid
-	if(node->solid)
+	// we can terminate early if no contents nodes are down this subtree
+	if(!(node->contentsor & contents))
+		return;
+
+	// we can terminate early if all the subtrees have the same contents
+	if(node->contents & contents)
 	{
 		float d = SignedDistance(node->min, node->max, p);
 
@@ -106,18 +118,18 @@ static void FindSignedDistance_r(qtnode_t *node, vec2_t p)
 
 	// recurse the children
 	for (i = 0; i < 4; i++)
-		FindSignedDistance_r(node->child[i], p);
+		FindSignedDistance_r(node->child[i], p, contents);
 }
 
-static float FindSignedDistance(vec2_t p)
+static float FindSignedDistance(vec2_t p, contents_t contents)
 {
 	signeddistance = -1e20;
 
 	//signeddistance = SignedDistance(vec2_t (-100, -100), vec2_t(100, 100), p);
 	//printf("signed distance: %f\n", signeddistance);
 
-	FindSignedDistance_r(nodes, p);
-	printf("signed distance: %f\n", signeddistance);
+	FindSignedDistance_r(nodes, p, contents);
+	//printf("signed distance: %f\n", signeddistance);
 
 	return signeddistance;
 }
@@ -130,7 +142,9 @@ static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, i
 	// setup the node
 	node->min	= min;
 	node->max	= max;
-	node->solid	= true;
+	node->contents	= CONTENTS_SOLID;
+	node->contentsand = CONTENTS_SOLID;
+	node->contentsor = CONTENTS_SOLID;
 
 	// don't recurse if we're at the bottom of the tree
 	if(level == numlevels - 1)
@@ -171,6 +185,10 @@ static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, i
 		// recurse this node
 		BuildQuadTree_r(node->child[i], min, max, level + 1, numlevels);
 	}
+
+	// rebuild contents from children
+	node->contentsand = node->child[0]->contentsand & node->child[1]->contentsand & node->child[2]->contentsand & node->child[3]->contentsand;
+	node->contentsor = node->child[0]->contentsor | node->child[1]->contentsor | node->child[2]->contentsor | node->child[3]->contentsor;
 }
 
 static void BuildQuadTree()
@@ -186,31 +204,48 @@ static void BuildQuadTree()
 	BuildQuadTree_r(nodes, min, max, 0, numlevels);
 }
 
-static void RebuildSolids_r(qtnode_t* node)
+static void RebuildContents_r(qtnode_t* node)
 {
-	int i;
-
 	if (!node)
 		return;
 	
-	// need to rebuild the entire tree?
-	//if (!BoxesIntersect(node->min, node->max, min, max))
-	//	return 
+	node->contents = node->child[0]->contents & node->child[1]->contents & node->child[2]->contents & node->child[3]->contents;
 
-	for (i = 0; i < 4; i++)
-		RebuildSolids_r(node->child[i]);
+	node->contentsand = node->child[0]->contentsand & node->child[1]->contentsand & node->child[2]->contentsand & node->child[3]->contentsand;
+	node->contentsor = node->child[0]->contentsor | node->child[1]->contentsor | node->child[2]->contentsor | node->child[3]->contentsor;
 
-	// update solidness if we're not a leaf node
-	// (even more of a reason to do a bottom up refresh)
-	if(node->child[0] && node->child[1] && node->child[2] && node->child[3])
-	{
-		node->solid = node->child[0]->solid && node->child[1]->solid && node->child[2]->solid && node->child[3]->solid;
-	}
+	RebuildContents_r(node->parent);
 }
 
-static void RebuildSolids()
+// rebuild the contents from the leaf upwards
+static void RebuildContents(qtnode_t *leaf)
 {
-	RebuildSolids_r(nodes);
+	RebuildContents_r(leaf->parent);
+}
+
+static contents_t ContentsAtPoint_r(qtnode_t *node, vec2_t p)
+{
+	if (!node->child[0] && !node->child[1] && !node->child[2] && !node->child[3])
+	{
+		return node->contents;
+	}
+
+	// recurse the children
+	for (int i = 0; i < 4; i++)
+	{
+		if(!BoxesIntersect(node->child[i]->min, node->child[i]->max, p, p))
+			continue;
+
+		return ContentsAtPoint_r(node->child[i], p);
+	}
+
+	// should never get here
+	return 0xffffffff;
+}
+
+static contents_t ContentsAtPoint(vec2_t p)
+{
+	return ContentsAtPoint_r(nodes, p);
 }
 
 static void CarveTree_r(qtnode_t* node, vec2_t min, vec2_t max)
@@ -236,9 +271,19 @@ static void CarveTree_r(qtnode_t* node, vec2_t min, vec2_t max)
 		if((mid1 - mid0).Length() < toolsize)
 		{
 			if(lmbutton && !rmbutton)
-				node->solid = false;
+			{
+				node->contents = CONTENTS_EMPTY;
+				node->contentsand = CONTENTS_EMPTY;
+				node->contentsor = CONTENTS_EMPTY;
+			}
 			if(!lmbutton && rmbutton)
-				node->solid = true;
+			{
+				node->contents = CONTENTS_SOLID;
+				node->contentsand = CONTENTS_SOLID;
+				node->contentsor = CONTENTS_SOLID;
+			}
+
+			RebuildContents(node);
 		}
 
 		return;
@@ -325,7 +370,7 @@ static void R_DrawTree_r(qtnode_t* node)
 		R_DrawWireframeQuad,
 	};
 
-	if(node->solid)
+	if(node->contents & CONTENTS_SOLID)
 	{
 		QuadDrawList[rendermode](node->min, node->max);
 
@@ -340,9 +385,18 @@ static void DrawDistance()
 {
 	vec2_t p = vec2_t(worldx, worldy);
 
-	float d1 = FindSignedDistance(vec2_t(worldx, worldy));
-	float d2 = FindSignedDistance(vec2_t(worldx + 0.01f, worldy));
-	float d3 = FindSignedDistance(vec2_t(worldx, worldy + 0.01f));
+	// figure out whether we're in solid or not
+	contents_t contents = ContentsAtPoint(vec2_t(worldx, worldy));
+	
+	// if we're in solid find the empty distance and vice versa
+	if (contents & CONTENTS_SOLID)
+		contents = CONTENTS_EMPTY;
+	else if (contents & CONTENTS_EMPTY)
+		contents = CONTENTS_SOLID;
+
+	float d1 = FindSignedDistance(vec2_t(worldx, worldy), contents);
+	float d2 = FindSignedDistance(vec2_t(worldx + 0.01f, worldy), contents);
+	float d3 = FindSignedDistance(vec2_t(worldx, worldy + 0.01f), contents);
 
 	vec2_t n(d2 - d1, d3 - d1);
 	n.Normalize();
@@ -451,7 +505,9 @@ static void UpdateMouse(int x, int y)
 
 	printf("worldx: %f, worldy: %f\n", worldx, worldy);
 
-	FindSignedDistance(vec2_t(worldx, worldy));
+	//FindSignedDistance(vec2_t(worldx, worldy), CONTENTS_SOLID);
+
+	printf("contents: %08x\n", ContentsAtPoint(vec2_t(worldx, worldy)));
 }
 
 static void glutMouseMotion(int x, int y)
@@ -465,7 +521,6 @@ static void glutMouseMotion(int x, int y)
 		max = vec2_t(worldx, worldy) + vec2_t(toolsize, toolsize);
 
 		CarveTree(min, max);
-		RebuildSolids();
 	}
 
 	glutPostRedisplay();

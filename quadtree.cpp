@@ -40,18 +40,6 @@ static float worldx, worldy;
 static int 	rendermode = 1;
 static float	toolsize = 4.0f;
 
-// quad tree nodes
-static int		numnodes;
-static qtnode_t		nodes[4194304];
-
-static qtnode_t *AllocNode()
-{
-	qtnode_t *n = nodes + numnodes;
-	numnodes++;
-
-	return n;
-}
-
 static bool BoxesIntersect(vec2_t mina, vec2_t maxa, vec2_t minb, vec2_t maxb)
 {
 	if(maxa[0] < minb[0] || mina[0] > maxb[0])
@@ -62,76 +50,56 @@ static bool BoxesIntersect(vec2_t mina, vec2_t maxa, vec2_t minb, vec2_t maxb)
 	return true;
 }
 
-// compute the signed distance
-// negative is outside, positive is inside
-static float SignedDistance(vec2_t min, vec2_t max, vec2_t p)
+// ==============================================================
+// Quadtree
+
+// quad tree nodes
+static int		numnodes;
+static qtnode_t		*nodes;
+
+static int CalcNumNodesForLevel(int level)
 {
-	vec2_t origin = 0.5f * (max + min);
-	vec2_t delta = max - min;
-	vec2_t hdelta = 0.5 * delta;
+	int count = 1;
 
-	// shift the point to a box centered around the origin
-	p = p - origin;
+	for(int i = 0; i < level; i++)
+		count *= 4;
 
-	// since the box is symetrical we can test only the positive quadrant
-	if(p.x < 0.0f)
-		p.x = -p.x;
-	if(p.y < 0.0f)
-		p.y = -p.y;
-
-	p = p - hdelta;
-
-	if(p.x > 0.0f && p.y > 0.0f)
-		return -p.Length();
-	if(p.x > 0.0f && p.y < 0.0f)
-		return -p.x;
-	if(p.x < 0.0f && p.y > 0.0f)
-		return -p.y;
-	
-	// both are inside the box
-	return (p.x > p.y ? -p.x : -p.y);
+	return count;
 }
 
-static float signeddistance;
-
-static void FindSignedDistance_r(qtnode_t *node, vec2_t p, contents_t contents)
+static int CalcNumNodes(int numlevels)
 {
-	int i;
+	int count = 0;
 
-	if(!node)
-		return;
+	for(int i = 0; i < numlevels; i++)
+		count += CalcNumNodesForLevel(i);
 
-	// we can terminate early if all the nodes in the the subtree don't contain contents
-	if(!(node->contents[1] & contents))
-		return;
+	return count;
+}
 
-	// we can test early if all the nodes in the subtree have the contents
-	if(node->contents[0] & contents)
+static void CommitNodeMemory()
+{
+	int numbytes;
+
+	numbytes = CalcNumNodes(QUADTREE_LOG2 + 1);
+	numbytes *= sizeof(qtnode_t);
+
+	printf("allocating %d bytes (%d) nodes...\n", numbytes, CalcNumNodes(QUADTREE_LOG2 + 1));
+	nodes = (qtnode_t*)malloc(numbytes);
+
+	if(!nodes)
 	{
-		float d = SignedDistance(node->min, node->max, p);
-
-		if(d > signeddistance)
-			signeddistance = d;
-
-		return;
+		printf("failed commit memory for nodes\n");
+		exit(-1);
 	}
-
-	// recurse the children
-	for (i = 0; i < 4; i++)
-		FindSignedDistance_r(node->child[i], p, contents);
 }
 
-static float FindSignedDistance(vec2_t p, contents_t contents)
+static qtnode_t *AllocNode()
 {
-	signeddistance = -1e20;
+	qtnode_t *n = nodes + numnodes;
+	numnodes++;
 
-	//signeddistance = SignedDistance(vec2_t (-100, -100), vec2_t(100, 100), p);
-	//printf("signed distance: %f\n", signeddistance);
-
-	FindSignedDistance_r(nodes, p, contents);
-	//printf("signed distance: %f\n", signeddistance);
-
-	return signeddistance;
+	return n;
 }
 
 static void BuildQuadTree_r(qtnode_t* node, vec2_t min, vec2_t max, int level, int numlevels)
@@ -191,6 +159,8 @@ static void BuildQuadTree()
 	vec2_t min, max;
 
 	int numlevels	= QUADTREE_LOG2 + 1;
+
+	CommitNodeMemory();
 	
 	numnodes	= 1;
 	min		= vec2_t(0, 0);
@@ -198,6 +168,84 @@ static void BuildQuadTree()
 
 	BuildQuadTree_r(nodes, min, max, 0, numlevels);
 }
+
+// ==============================================================
+// signed distance code
+
+// compute the signed distance
+// negative is outside, positive is inside
+static float SignedDistanceBox(vec2_t min, vec2_t max, vec2_t p)
+{
+	vec2_t origin = 0.5f * (max + min);
+	vec2_t delta = max - min;
+	vec2_t hdelta = 0.5 * delta;
+
+	// shift the point to a box centered around the origin
+	p = p - origin;
+
+	// since the box is symetrical we can test only the positive quadrant
+	if(p.x < 0.0f)
+		p.x = -p.x;
+	if(p.y < 0.0f)
+		p.y = -p.y;
+
+	p = p - hdelta;
+
+	if(p.x > 0.0f && p.y > 0.0f)
+		return -p.Length();
+	if(p.x > 0.0f && p.y < 0.0f)
+		return -p.x;
+	if(p.x < 0.0f && p.y > 0.0f)
+		return -p.y;
+	
+	// both are inside the box
+	return (p.x > p.y ? -p.x : -p.y);
+}
+
+static float signeddistance;
+
+static void FindSignedDistance_r(qtnode_t *node, vec2_t p, contents_t contents)
+{
+	int i;
+
+	if(!node)
+		return;
+
+	// we can terminate early if all the nodes in the the subtree don't contain contents
+	if(!(node->contents[1] & contents))
+		return;
+
+	// we can test early if all the nodes in the subtree have the contents
+	if(node->contents[0] & contents)
+	{
+		float d = SignedDistanceBox(node->min, node->max, p);
+
+		if(d > signeddistance)
+			signeddistance = d;
+
+		return;
+	}
+
+	// recurse the children
+	for (i = 0; i < 4; i++)
+		FindSignedDistance_r(node->child[i], p, contents);
+}
+
+static float FindSignedDistance(vec2_t p, contents_t contents)
+{
+	signeddistance = -1e20;
+
+	//signeddistance = SignedDistance(vec2_t (-100, -100), vec2_t(100, 100), p);
+	//printf("signed distance: %f\n", signeddistance);
+
+	FindSignedDistance_r(nodes, p, contents);
+	//printf("signed distance: %f\n", signeddistance);
+
+	return signeddistance;
+}
+
+// ==============================================================
+// contents
 
 static void RebuildContents_r(qtnode_t* node)
 {
@@ -242,6 +290,9 @@ static contents_t ContentsAtPoint(vec2_t p)
 	return ContentsAtPoint_r(nodes, p);
 }
 
+// ==============================================================
+// tree painting / carving
+
 static void CarveTree_r(qtnode_t* node, vec2_t min, vec2_t max)
 {
 	int i;
@@ -281,8 +332,9 @@ static void CarveTree(vec2_t min, vec2_t max)
 	CarveTree_r(nodes, min, max);
 }
 
-// this rebuilds from the top down. it should be possible to rebuild from the bottom up and early out
-// on the first node that hasn't changed?
+// ==============================================================
+// rendering / glut
+
 #include "GL/freeglut.h"
 
 static void R_DrawCircle(vec2_t pos, float r)
@@ -489,11 +541,7 @@ static void UpdateMouse(int x, int y)
 	worldx = xx;
 	worldy = yy;
 
-	printf("worldx: %f, worldy: %f\n", worldx, worldy);
-
-	//FindSignedDistance(vec2_t(worldx, worldy), CONTENTS_SOLID);
-
-	printf("contents: %08x\n", ContentsAtPoint(vec2_t(worldx, worldy)));
+	//printf("worldx: %f, worldy: %f, contents: %08x\n", worldx, worldy, ContentsAtPoint(vec2_t(worldx, worldy)));
 }
 
 static void glutMouseMotion(int x, int y)
